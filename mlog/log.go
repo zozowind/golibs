@@ -3,6 +3,8 @@ package mlog
 import (
 	"io"
 	"runtime/debug"
+	"strings"
+	"sync"
 
 	"github.com/rs/zerolog"
 )
@@ -22,10 +24,11 @@ const (
 //  输出格式定义
 //  支持自定义KV对输出
 //  日志染色功能
-// 堆栈输出 默认Error以下输出
+//  堆栈输出 默认Error以下输出
 
 //LogSetting 日志设定
 type LogSetting struct {
+	Name   string
 	Write  io.Writer
 	Level  zerolog.Level
 	Caller string
@@ -35,9 +38,18 @@ type LogSetting struct {
 //Logger 日志生成器
 type Logger struct {
 	Agents map[*LogSetting]*zerolog.Logger
+	Mu     sync.Mutex
 }
 
-//New 新建Logger
+func ParseLevel(str string) (lvl zerolog.Level) {
+	lvl, err := zerolog.ParseLevel(strings.ToLower(str))
+	if err != nil {
+		lvl = zerolog.NoLevel
+	}
+	return
+}
+
+// New 新建Logger
 func New(settings []*LogSetting) *Logger {
 	logger := &Logger{
 		Agents: map[*LogSetting]*zerolog.Logger{},
@@ -49,6 +61,19 @@ func New(settings []*LogSetting) *Logger {
 		logger.Agents[s] = &logAgent
 	}
 	return logger
+}
+
+//SetLevel 设置level
+func (l *Logger) SetLevel(all bool, name string, lvl zerolog.Level) {
+	l.Mu.Lock()
+	for s := range l.Agents {
+		if all || s.Name == name {
+			newAgent := zerolog.New(s.Write).With().Timestamp().Logger().Level(lvl)
+			zerolog.CallerSkipFrameCount = 3
+			l.Agents[s] = &newAgent
+		}
+	}
+	l.Mu.Unlock()
 }
 
 //Print Print
@@ -236,41 +261,74 @@ func (l *Logger) ErrorKv(kv map[string]interface{}, msg string, v ...interface{}
 //Fatal log Fatal
 func (l *Logger) Fatal(msg string) {
 	for s, a := range l.Agents {
+		if s.Stack != Off {
+			a.Error().Msgf("%s", debug.Stack())
+		}
 		e := a.Fatal()
 		if s.Caller != Off {
 			e = e.Caller()
 		}
 		e.Msg(msg)
-		if s.Stack != Off {
-			a.Error().Msgf("%s", debug.Stack())
-		}
 	}
 }
 
 //Fatalf log Fatalf
 func (l *Logger) Fatalf(msg string, v ...interface{}) {
 	for s, a := range l.Agents {
+		if s.Stack != Off {
+			a.Error().Msgf("%s", debug.Stack())
+		}
 		e := a.Fatal()
 		if s.Caller != Off {
 			e = e.Caller()
 		}
 		e.Msgf(msg, v...)
-		if s.Stack != Off {
-			a.Fatal().Msgf("%s", debug.Stack())
-		}
 	}
 }
 
 //FatalKv log with kv in Fatal
 func (l *Logger) FatalKv(kv map[string]interface{}, msg string, v ...interface{}) {
 	for s, a := range l.Agents {
+		if s.Stack != Off {
+			a.Error().Msgf("%s", debug.Stack())
+		}
 		e := a.Fatal()
 		if s.Caller == On {
 			e = e.Caller()
 		}
 		e.Fields(kv).Msgf(msg, v...)
-		if s.Stack != Off {
-			a.Fatal().Msgf("%s", debug.Stack())
+	}
+}
+
+//Panic log Panic
+func (l *Logger) Panic(msg string) {
+	for s, a := range l.Agents {
+		e := a.Panic()
+		if s.Caller != Off {
+			e = e.Caller()
 		}
+		e.Msg(msg)
+	}
+}
+
+//Panicf log Panicf
+func (l *Logger) Panicf(msg string, v ...interface{}) {
+	for s, a := range l.Agents {
+		e := a.Panic()
+		if s.Caller != Off {
+			e = e.Caller()
+		}
+		e.Msgf(msg, v...)
+	}
+}
+
+//PanicKv log with kv in Panic
+func (l *Logger) PanicKv(kv map[string]interface{}, msg string, v ...interface{}) {
+	for s, a := range l.Agents {
+		e := a.Panic()
+		if s.Caller == On {
+			e = e.Caller()
+		}
+		e.Fields(kv).Msgf(msg, v...)
 	}
 }
